@@ -30,6 +30,12 @@ except Exception as e:
     print(f"[PainterNodes] Failed to import PainterVideoCombine2: {e}")
 
 try:
+    from . import PainterVideoCombine3
+    _register_module(PainterVideoCombine3)
+except Exception as e:
+    print(f"[PainterNodes] Failed to import PainterVideoCombine3: {e}")
+
+try:
     from . import PainterVideoInfo
     _register_module(PainterVideoInfo)
 except Exception as e:
@@ -167,11 +173,41 @@ try:
 except Exception as e:
     print(f"[PainterNodes] Failed to import PainterSigmasGraph: {e}")
 
+try:
+    from . import PainterMiniMaxFL2VA
+    _register_module(PainterMiniMaxFL2VA)
+except Exception as e:
+    print(f"[PainterNodes] Failed to import PainterMiniMaxFL2VA: {e}")
+
+try:
+    from . import PainterMiniMaxFL2VA2
+    _register_module(PainterMiniMaxFL2VA2)
+except Exception as e:
+    print(f"[PainterNodes] Failed to import PainterMiniMaxFL2VA2: {e}")
+
+try:
+    from . import PainterMiniMaxFL2VA3
+    _register_module(PainterMiniMaxFL2VA3)
+except Exception as e:
+    print(f"[PainterNodes] Failed to import PainterMiniMaxFL2VA3: {e}")
+
+try:
+    from . import PainterLoadVideo
+    _register_module(PainterLoadVideo)
+except Exception as e:
+    print(f"[PainterNodes] Failed to import PainterLoadVideo: {e}")
+
+try:
+    from . import PainterSeed
+    _register_module(PainterSeed)
+except Exception as e:
+    print(f"[PainterNodes] Failed to import PainterSeed: {e}")
+
 
 
 print(f"\033[92m[PainterNodes] Loaded {len(NODE_CLASS_MAPPINGS)} nodes successfully!\033[0m")
 
-__version__ = "1.4.5"
+__version__ = "1.4.6"
 WEB_DIRECTORY = "./web/js"
 
 __all__ = [

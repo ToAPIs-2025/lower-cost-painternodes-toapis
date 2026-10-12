@@ -5,11 +5,13 @@ const AR_PORTRAIT = "9:16 (Portrait)";
 
 const RES_LANDSCAPE = [
     "512*288",
+    "736*416",
     "800*448",
     "960*544",
     "1024*576",
     "1280*736",
     "1376*768",
+    "1472*832",
     "1536*864",
     "1600*896",
     "1920*1088",
@@ -27,7 +29,7 @@ const DEFAULT_FOR = {
 
 const DURATION_STEP = 1;
 
-const VERSION = "v1.3 (H3 size settings, 9 resolutions, 1s step, decimal display)";
+const VERSION = "v1.4 (H3 size settings, 11 resolutions, 1s step, decimal display)";
 
 function listsFor(aspectRatio) {
     return aspectRatio === AR_PORTRAIT ? RES_PORTRAIT.slice() : RES_LANDSCAPE.slice();
