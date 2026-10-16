@@ -98,7 +98,10 @@ def _probe_stream(ffmpeg, video_path):
         fps_match = re.search(", ([\\d\\.]+) fps", line)
         if fps_match:
             fps = float(fps_match.group(1))
-        has_alpha = re.search("(yuva|rgba|bgra|gbra)", line) is not None
+        # "has_alpha" doubles as "needs the 16-bit pipe": alpha sources
+        # obviously, and high bit depth sources (10/12-bit) keep their
+        # precision through rgba64le instead of being truncated to 8-bit.
+        has_alpha = re.search("(yuva|rgba|bgra|gbra|10le|10be|12le|12be)", line) is not None
         break
     if width is None or height is None:
         raise RuntimeError("PainterLoadVideo: unable to parse video information:\n" + summary)
@@ -152,8 +155,12 @@ def _frame_stream(video_path, force_rate, frame_load_cap, start_frame,
         else:
             post_seek = ["-ss", str(start_time)]
 
+    # Only pay for the alpha channel when the source actually has one;
+    # rgb24 moves less than half the bytes through the pipe for normal
+    # videos and converts just as fast.
+    pix_fmt = "rgba64le" if has_alpha else "rgb24"
     decode_args = [ffmpeg, "-v", "error", "-an"] + input_args + \
-        ["-pix_fmt", "rgba64le"] + post_seek
+        ["-pix_fmt", pix_fmt] + post_seek
 
     out_w, out_h = src_w, src_h
     filters = []
@@ -184,7 +191,7 @@ def _frame_stream(video_path, force_rate, frame_load_cap, start_frame,
     pbar = ProgressBar(int(expected_frames))
     try:
         with subprocess.Popen(decode_args, stdout=subprocess.PIPE) as proc:
-            bytes_per_frame = out_w * out_h * 8
+            bytes_per_frame = out_w * out_h * (8 if has_alpha else 3)
             buffer = bytearray(bytes_per_frame)
             filled = 0
             previous = None
@@ -201,11 +208,22 @@ def _frame_stream(video_path, force_rate, frame_load_cap, start_frame,
                     if previous is not None:
                         yield previous
                         pbar.update(1)
-                    previous = np.frombuffer(
-                        buffer, dtype=np.dtype(np.uint16).newbyteorder("<")
-                    ).reshape(out_h, out_w, 4) / (2 ** 16 - 1)
-                    if not has_alpha:
-                        previous = previous[:, :, :-1]
+                    # Slice the RGB channels BEFORE the float32 cast so
+                    # the yielded frame is a contiguous array; a strided
+                    # view would make every copy into the output buffer
+                    # slow. float32 throughout also halves the memory
+                    # bandwidth versus a float64 intermediate.
+                    if has_alpha:
+                        frame = np.frombuffer(
+                            buffer, dtype=np.dtype(np.uint16).newbyteorder("<")
+                        ).reshape(out_h, out_w, 4).astype(np.float32)
+                        frame *= 1.0 / 65535.0
+                    else:
+                        frame = np.frombuffer(
+                            buffer, dtype=np.uint8
+                        ).reshape(out_h, out_w, 3).astype(np.float32)
+                        frame *= 1.0 / 255.0
+                    previous = frame
                     filled = 0
     except BrokenPipeError:
         raise RuntimeError("PainterLoadVideo: the ffmpeg decoding process crashed.")
@@ -328,12 +346,24 @@ class PainterLoadVideo:
          _expected, out_w, out_h, has_alpha) = next(stream)
 
         budget = _frame_budget(src_w, src_h)
-        decoded = np.fromiter(
-            itertools.islice(stream, budget),
-            np.dtype((np.float32, (out_h, out_w, 4 if has_alpha else 3))))
-        if len(decoded) == 0:
+        channels = 4 if has_alpha else 3
+        # Preallocate from the expected frame count and fill in place;
+        # np.fromiter without a count keeps reallocating the whole
+        # multi-gigabyte buffer while growing.
+        capacity = max(int(_expected), 1)
+        frame_buffer = np.empty((capacity, out_h, out_w, channels), dtype=np.float32)
+        count = 0
+        for frame in itertools.islice(stream, budget):
+            if count >= capacity:
+                capacity *= 2
+                grown = np.empty((capacity, out_h, out_w, channels), dtype=np.float32)
+                grown[:count] = frame_buffer[:count]
+                frame_buffer = grown
+            frame_buffer[count] = frame
+            count += 1
+        if count == 0:
             raise RuntimeError("PainterLoadVideo: no frames were decoded from the video.")
-        images = torch.from_numpy(decoded)
+        images = torch.from_numpy(frame_buffer[:count])
         if images.size(3) == 4:
             # Alpha is not needed downstream, keep RGB only.
             images = images[:, :, :, :3]

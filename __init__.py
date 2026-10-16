@@ -203,11 +203,17 @@ try:
 except Exception as e:
     print(f"[PainterNodes] Failed to import PainterSeed: {e}")
 
+try:
+    from . import H3SageAttention
+    _register_module(H3SageAttention)
+except Exception as e:
+    print(f"[PainterNodes] Failed to import H3SageAttention: {e}")
+
 
 
 print(f"\033[92m[PainterNodes] Loaded {len(NODE_CLASS_MAPPINGS)} nodes successfully!\033[0m")
 
-__version__ = "1.4.6"
+__version__ = "1.4.7"
 WEB_DIRECTORY = "./web/js"
 
 __all__ = [

@@ -4,20 +4,29 @@ import { api } from "../../../scripts/api.js";
 /*
  * PainterLoadVideo front-end
  *
- * - The preview is the native one created by the "video_upload" combo.
- *   This extension only enhances it in place: autoplay, loop, muted
- *   (hover to unmute), no control bar, and its src is swapped to the
- *   parameterized backend endpoint /painternodes/preview so changing
- *   force_rate, custom size, frame cap or start_frame re-renders the
- *   clip immediately.
+ * - The upload button comes from the native "video_upload" combo. The
+ *   native preview the frontend creates is removed from the DOM (both
+ *   via node.widgets and via a DOM scan fallback), and replaced by our
+ *   own preview widget rendered by /painternodes/preview with the
+ *   current widget values, so changing force_rate, custom size, frame
+ *   cap or start_frame updates the clip immediately. It autoplays muted
+ *   on loop; hovering unmutes it.
  * - The numeric widgets use a custom "PAINTER_NUMBER" type that draws
  *   the inline hints (source fps / frames that will be loaded) and the
  *   reset-to-default icon.
+ * - The node height is locked to the fitted preview size (same idea as
+ *   PainterVideoCombine2): the bottom edge cannot be dragged, the width
+ *   rescales the preview proportionally.
  */
 
 const NODE_TYPE = "PainterLoadVideo";
 const DEFAULT_FORMAT = "H3";
 const MARGIN = 15;
+// 13 trims the node flush against the preview; keep a couple of pixels
+// so the bottom gap matches the narrow side margins below.
+const BOTTOM_TRIM = 6;
+// Side margin around the preview widget, narrowed to match VHS nodes.
+const PREVIEW_MARGIN = 5;
 
 const FORMAT_PRESETS = {
     "None": null,
@@ -238,7 +247,7 @@ function installHints(node) {
 }
 
 /* ------------------------------------------------------------------ */
-/* native preview enhancement                                          */
+/* own parameterized preview + native preview removal                  */
 /* ------------------------------------------------------------------ */
 
 function collectParams(node) {
@@ -254,26 +263,28 @@ function collectParams(node) {
     };
 }
 
-function previewUrl(node) {
-    const params = collectParams(node);
-    if (!params.filename) return "";
-    return api.apiURL("/painternodes/preview?" + new URLSearchParams(
-        Object.fromEntries(Object.entries(params).map(([k, v]) => [k, String(v)]))));
-}
-
-// Locate the native upload preview video: prefer the element we already
-// claimed, otherwise scan the DOM for a /view video matching this node's
-// file (the frontend may create it lazily, outside node.widgets).
-function findNativeVideo(node) {
-    if (node._plvVideoEl && node._plvVideoEl.isConnected) {
-        return node._plvVideoEl;
+function removeNativePreviews(node) {
+    // 1) widgets path: hide + remove the element of any media widget the
+    //    native upload combo registered on the node.
+    for (const w of node.widgets || []) {
+        if (w._plvHiddenNative) continue;
+        const el = w.element;
+        if (!el) continue;
+        const isVideo = el.tagName === "VIDEO" || el.querySelector?.("video");
+        if (isVideo && w.name !== "painter_preview") {
+            w._plvHiddenNative = true;
+            w.options ||= {};
+            w.options.hidden = true;
+            w.computeSize = () => [0, 0];
+            el.remove();
+        }
     }
-    node._plvVideoEl = null;
+    // 2) DOM scan fallback: the frontend may render the upload preview
+    //    outside node.widgets. Remove its whole wrapper chain.
     const filename = getWidget(node, "video")?.value;
-    if (!filename) return null;
+    if (!filename || !node._plvMedia) return;
     for (const v of document.querySelectorAll("video")) {
-        // Never steal a video element already claimed by another node.
-        if (v._plvOwner && v._plvOwner !== node) continue;
+        if (node._plvMedia.contains(v)) continue;
         const src = v.currentSrc || v.src || "";
         if (!src) continue;
         let url;
@@ -284,83 +295,131 @@ function findNativeVideo(node) {
         }
         if (!url.pathname.endsWith("/view")) continue;
         if (url.searchParams.get("filename") !== filename) continue;
-        return v;
+        let el = v;
+        while (el.parentElement && el.parentElement !== document.body
+                && el.parentElement.children.length === 1) {
+            el = el.parentElement;
+        }
+        el.remove();
     }
-    return null;
 }
 
-function setPreviewSrc(node) {
-    const v = node._plvVideoEl;
-    if (!v || !v.isConnected) return;
-    const url = previewUrl(node);
-    if (!url || node._plvPreviewUrl === url) return;
-    node._plvPreviewUrl = url;
-    v.src = url;
-    v.load?.();
-}
-
-function enhanceNativePreview(node) {
-    const v = findNativeVideo(node);
-    if (!v) return false;
-    node._plvVideoEl = v;
-    v._plvOwner = node;
-
-    if (!v._plvPatched) {
-        v._plvPatched = true;
-        v.controls = false;
-        v.loop = true;
-        v.muted = true;
-        v.autoplay = true;
-        v.playsInline = true;
-        v.preload = "auto";
-        v.style.objectFit = "contain";
-
-        v.addEventListener("mouseenter", () => {
-            v.muted = false;
-            v.volume = 1;
-        });
-        v.addEventListener("mouseleave", () => {
-            v.muted = true;
-        });
-    }
-
-    setPreviewSrc(node);
-    if (v.paused) {
-        v.play().catch(() => { /* autoplay guard */ });
-    }
-    return true;
-}
-
-function scheduleEnhance(node, attempts = [0, 100, 300, 800, 1500, 3000, 5000, 8000]) {
+function scheduleRemoveNative(node, attempts = [0, 100, 300, 800, 1500, 3000, 5000, 8000]) {
     for (const delay of attempts) {
         setTimeout(() => {
             if (node.isRemoved?.()) return;
-            enhanceNativePreview(node);
+            removeNativePreviews(node);
+            refitNode(node);
         }, delay);
     }
 }
 
-function schedulePreviewUpdate(node) {
-    clearTimeout(node._plvTimer);
-    node._plvTimer = setTimeout(() => {
-        if (!enhanceNativePreview(node)) {
-            scheduleEnhance(node, [0, 500]);
-        }
-    }, 350);
-}
-
-let enhanceObserver = null;
-function startEnhanceObserver() {
-    if (enhanceObserver) return;
-    enhanceObserver = new MutationObserver(() => {
+let nativeHideObserver = null;
+function startNativeHideObserver() {
+    if (nativeHideObserver) return;
+    nativeHideObserver = new MutationObserver(() => {
         const nodes = app.graph?._nodes || [];
         for (const node of nodes) {
             if (node.comfyClass === NODE_TYPE || node.type === NODE_TYPE) {
-                enhanceNativePreview(node);
+                removeNativePreviews(node);
             }
         }
     });
-    enhanceObserver.observe(document.body, { childList: true, subtree: true });
+    nativeHideObserver.observe(document.body, { childList: true, subtree: true });
+}
+
+function updatePreview(node) {
+    const params = collectParams(node);
+    if (!params.filename) return;
+    const url = api.apiURL("/painternodes/preview?" + new URLSearchParams(
+        Object.fromEntries(Object.entries(params).map(([k, v]) => [k, String(v)]))));
+    if (node._plvPreviewUrl === url) return;
+    node._plvPreviewUrl = url;
+
+    let holder = node._plvMedia;
+    if (!holder) {
+        holder = document.createElement("div");
+        holder.style.position = "relative";
+        holder.style.width = "100%";
+        holder.style.overflow = "hidden";
+        holder.style.boxSizing = "border-box";
+        // Transparent so the thin letterbox left by "contain" at the
+        // minimum node width blends into the node body instead of
+        // showing up as black bars.
+        holder.style.background = "transparent";
+        holder.style.borderRadius = "4px";
+        holder.style.padding = "0px";
+        holder.style.margin = "0px";
+
+        const widget = node.addDOMWidget("painter_preview", "preview", holder, {
+            serialize: false,
+            hideOnZoom: false,
+        });
+        widget.options.padding = 0;
+        widget.options.margin = PREVIEW_MARGIN;
+        widget.computeSize = () => {
+            const width = node.size[0] - PREVIEW_MARGIN * 2;
+            const aspect = node._plvAspect || (16 / 9);
+            return [width, Math.round(width / aspect)];
+        };
+        node._plvMedia = holder;
+    }
+
+    holder.innerHTML = "";
+    const video = document.createElement("video");
+    video.src = url;
+    video.autoplay = true;
+    video.loop = true;
+    video.muted = true;
+    video.playsInline = true;
+    video.controls = false;
+    video.preload = "auto";
+    video.style.width = "100%";
+    video.style.height = "100%";
+    // contain, not cover: the node height formula trims a few pixels
+    // for the flush bottom edge, which slightly squeezes the preview
+    // box; cover would crop the picture there (most visible at the
+    // minimum node width), contain always shows the full frame.
+    video.style.objectFit = "contain";
+    video.style.display = "block";
+
+    video.addEventListener("mouseenter", () => {
+        video.muted = false;
+        video.volume = 1;
+    });
+    video.addEventListener("mouseleave", () => {
+        video.muted = true;
+    });
+    video.addEventListener("loadedmetadata", () => {
+        if (video.videoWidth && video.videoHeight) {
+            node._plvAspect = video.videoWidth / video.videoHeight;
+            refitNode(node);
+        }
+        video.play().catch(() => { /* autoplay guard */ });
+    });
+    for (const evt of ["pointerdown", "mousedown", "wheel", "dblclick"]) {
+        video.addEventListener(evt, (e) => e.stopPropagation(), true);
+    }
+    video.addEventListener("contextmenu", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+    });
+    holder.appendChild(video);
+}
+
+function schedulePreviewUpdate(node) {
+    clearTimeout(node._plvTimer);
+    node._plvTimer = setTimeout(() => updatePreview(node), 350);
+}
+
+function refitNode(node) {
+    const target = node.computeSize();
+    if (!target) return;
+    const want = target[1] - BOTTOM_TRIM;
+    if (Math.abs(want - node.size[1]) > 1) {
+        node.setSize([node.size[0], want]);
+    }
+    node.setDirtyCanvas(true, true);
 }
 
 /* ------------------------------------------------------------------ */
@@ -371,7 +430,7 @@ app.registerExtension({
     name: "PainterNodes.PainterLoadVideo",
 
     setup() {
-        startEnhanceObserver();
+        startNativeHideObserver();
     },
 
     getCustomWidgets() {
@@ -421,11 +480,30 @@ app.registerExtension({
     beforeRegisterNodeDef(nodeType, nodeData) {
         if (nodeData.name !== NODE_TYPE) return;
 
+        // Lock the node height to the fitted preview: dragging the
+        // bottom edge has no effect, dragging the width rescales the
+        // preview proportionally. Width keeps a sane lower bound.
+        const origResize = nodeType.prototype.onResize;
+        nodeType.prototype.onResize = function (size) {
+            origResize?.apply(this, arguments);
+            if (size[0] < 270) size[0] = 270;
+            if (!this._plvAspect) return;
+            const target = this.computeSize();
+            if (!target) return;
+            const oldPreviewH = Math.round((this.size[0] - PREVIEW_MARGIN * 2) / this._plvAspect);
+            const newPreviewH = Math.round((size[0] - PREVIEW_MARGIN * 2) / this._plvAspect);
+            const want = target[1] - oldPreviewH + newPreviewH - BOTTOM_TRIM;
+            if (Math.abs(size[1] - want) > 0.5) {
+                size[1] = want;
+            }
+        };
+
         const origCreated = nodeType.prototype.onNodeCreated;
         nodeType.prototype.onNodeCreated = function () {
             const result = origCreated ? origCreated.apply(this, arguments) : undefined;
 
             installHints(this);
+            scheduleRemoveNative(this);
 
             const combo = getWidget(this, "video");
             if (combo) {
@@ -433,12 +511,9 @@ app.registerExtension({
                 const self = this;
                 combo.callback = function (value, ...rest) {
                     origCallback?.call(this, value, ...rest);
-                    // The native widget may rebuild its media element when
-                    // the file changes, so re-scan and re-claim it.
-                    self._plvPreviewUrl = null;
-                    self._plvVideoEl = null;
                     fetchSourceMeta(self);
-                    scheduleEnhance(self, [0, 200, 800, 2000]);
+                    scheduleRemoveNative(self, [0, 300, 1000]);
+                    schedulePreviewUpdate(self);
                 };
             }
 
@@ -475,15 +550,16 @@ app.registerExtension({
             }
 
             fetchSourceMeta(this);
-            scheduleEnhance(this);
+            updatePreview(this);
             return result;
         };
 
         const origConfigure = nodeType.prototype.onConfigure;
         nodeType.prototype.onConfigure = function (info) {
             const result = origConfigure ? origConfigure.apply(this, arguments) : undefined;
+            scheduleRemoveNative(this, [50, 300, 1000, 2500]);
             fetchSourceMeta(this);
-            scheduleEnhance(this, [50, 300, 1000, 2500]);
+            setTimeout(() => updatePreview(this), 50);
             return result;
         };
     },
