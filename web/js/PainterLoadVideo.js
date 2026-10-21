@@ -230,9 +230,16 @@ function installHints(node) {
     if (capW) {
         capW._plvHint = (value) => {
             const meta = node._plvMeta;
-            if (!meta || !meta.frames) return "";
+            if (!meta || !meta.duration) return "";
+            // The frame count that survives decoding depends on the
+            // effective fps: force_rate resamples the stream, so the
+            // hint must follow the force_rate widget, not just the
+            // source frame count.
+            const effFps = rateW?.value || meta.fps;
+            if (!effFps) return "";
             const start = startW?.value || 0;
-            const available = Math.max(0, meta.frames - start);
+            const startSec = meta.fps > 0 ? start / meta.fps : 0;
+            const available = Math.max(0, Math.round((meta.duration - startSec) * effFps));
             const wanted = value > 0 ? Math.min(value, available) : available;
             return alignToFormat(wanted, formatW?.value) + HINT_ARROW;
         };
@@ -383,6 +390,7 @@ function updatePreview(node) {
     video.style.objectFit = "contain";
     video.style.display = "block";
 
+    // Hover: sound on, no control bar.
     video.addEventListener("mouseenter", () => {
         video.muted = false;
         video.volume = 1;
@@ -397,9 +405,7 @@ function updatePreview(node) {
         }
         video.play().catch(() => { /* autoplay guard */ });
     });
-    for (const evt of ["pointerdown", "mousedown", "wheel", "dblclick"]) {
-        video.addEventListener(evt, (e) => e.stopPropagation(), true);
-    }
+    video.addEventListener("dblclick", (e) => e.stopPropagation(), true);
     video.addEventListener("contextmenu", (e) => {
         e.preventDefault();
         e.stopPropagation();

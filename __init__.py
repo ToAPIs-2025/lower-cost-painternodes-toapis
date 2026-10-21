@@ -209,11 +209,17 @@ try:
 except Exception as e:
     print(f"[PainterNodes] Failed to import H3SageAttention: {e}")
 
+try:
+    from . import PainterMelBandRoFormer
+    _register_module(PainterMelBandRoFormer)
+except Exception as e:
+    print(f"[PainterNodes] Failed to import PainterMelBandRoFormer: {e}")
+
 
 
 print(f"\033[92m[PainterNodes] Loaded {len(NODE_CLASS_MAPPINGS)} nodes successfully!\033[0m")
 
-__version__ = "1.4.7"
+__version__ = "1.4.8"
 WEB_DIRECTORY = "./web/js"
 
 __all__ = [

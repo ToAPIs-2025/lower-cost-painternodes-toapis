@@ -64,7 +64,8 @@ def _ffmpeg_executable():
 
 def _probe_stream(ffmpeg, video_path):
     """Run a cheap copy pass so ffmpeg prints the stream summary, then
-    parse resolution, fps, alpha presence and duration from stderr."""
+    parse resolution, fps, alpha presence, audio presence and duration
+    from stderr."""
     input_args = ["-i", video_path]
     probe_args = [ffmpeg] + input_args + ["-c", "copy", "-frames:v", "1",
                                           "-f", "null", "-"]
@@ -111,7 +112,11 @@ def _probe_stream(ffmpeg, video_path):
     if dur_match:
         parts = dur_match.group(1).split(":")
         duration = int(parts[0]) * 3600 + int(parts[1]) * 60 + float(parts[2])
-    return width, height, fps, duration, has_alpha, input_args
+    # An audio stream line looks like "Stream #0:1(und): Audio: aac ...".
+    # Sources without one must not fail the audio extraction downstream;
+    # the audio output is simply skipped in that case.
+    has_audio = re.search("Stream #\\d+:\\d+[^\n]*: Audio", summary) is not None
+    return width, height, fps, duration, has_alpha, has_audio, input_args
 
 
 def _fit_size(src_w, src_h, custom_w, custom_h, downscale_ratio):
@@ -140,7 +145,7 @@ def _frame_stream(video_path, force_rate, frame_load_cap, start_frame,
     if ffmpeg is None:
         raise RuntimeError("PainterLoadVideo: no ffmpeg executable was found.")
 
-    src_w, src_h, src_fps, duration, has_alpha, input_args = _probe_stream(ffmpeg, video_path)
+    src_w, src_h, src_fps, duration, has_alpha, has_audio, input_args = _probe_stream(ffmpeg, video_path)
 
     # Convert the requested start frame into a seek time in seconds.
     start_time = 0.0
@@ -185,7 +190,7 @@ def _frame_stream(video_path, force_rate, frame_load_cap, start_frame,
         expected_frames = min(expected_frames, frame_load_cap)
 
     yield (src_w, src_h, src_fps, duration, int(round(src_fps * duration)),
-           frame_step, int(expected_frames), out_w, out_h, has_alpha)
+           frame_step, int(expected_frames), out_w, out_h, has_alpha, has_audio)
 
     decode_args += ["-f", "rawvideo", "-"]
     pbar = ProgressBar(int(expected_frames))
@@ -243,12 +248,20 @@ def _extract_audio(video_path, start_time=0.0, duration=0.0):
     try:
         result = subprocess.run(args + ["-f", "f32le", "-"],
                                 capture_output=True, check=True)
+        if not result.stdout:
+            # ffmpeg wrote nothing: the source has no audio track.
+            return None
         waveform = torch.frombuffer(bytearray(result.stdout), dtype=torch.float32)
         info_match = re.search(", (\\d+) Hz, (\\w+), ",
                                result.stderr.decode(*TEXT_ENCODING))
     except subprocess.CalledProcessError as exc:
-        raise RuntimeError("PainterLoadVideo: failed to extract audio:\n"
-                           + exc.stderr.decode(*TEXT_ENCODING))
+        stderr = exc.stderr.decode(*TEXT_ENCODING)
+        # "Output file does not contain any stream" is ffmpeg's way of
+        # saying the source has no audio stream at all. That is not an
+        # error: return None and let the caller skip the audio output.
+        if "does not contain any stream" in stderr:
+            return None
+        raise RuntimeError("PainterLoadVideo: failed to extract audio:\n" + stderr)
     if info_match:
         sample_rate = int(info_match.group(1))
         channels = {"mono": 1, "stereo": 2}.get(info_match.group(2), 2)
@@ -257,6 +270,16 @@ def _extract_audio(video_path, start_time=0.0, duration=0.0):
         channels = 2
     waveform = waveform.reshape((-1, channels)).transpose(0, 1).unsqueeze(0)
     return {"waveform": waveform, "sample_rate": sample_rate}
+
+
+def _silent_audio(duration, sample_rate=44100, channels=2):
+    """A valid silent AUDIO dict aligned with the loaded clip. Returning
+    None would crash every linked audio consumer, and a zero-length
+    waveform trips VAE encoders and mixers; a duration-matched block of
+    silence is treated as a normal audio track everywhere downstream."""
+    samples = max(int(round(duration * sample_rate)), 0)
+    return {"waveform": torch.zeros((1, channels, samples), dtype=torch.float32),
+            "sample_rate": sample_rate}
 
 
 class _DeferredAudio(Mapping):
@@ -269,7 +292,13 @@ class _DeferredAudio(Mapping):
 
     def _load(self):
         if self._cached is None:
-            self._cached = _extract_audio(self.path, self.start_time, self.duration)
+            # _extract_audio returns None when the source has no audio
+            # track (probe miss or a late container surprise): fall back
+            # to silent audio so downstream nodes still receive a valid
+            # AUDIO dict instead of an empty Mapping or None.
+            audio = _extract_audio(self.path, self.start_time, self.duration)
+            self._cached = (audio if audio is not None
+                            else _silent_audio(self.duration))
         return self._cached
 
     def __getitem__(self, key):
@@ -343,7 +372,7 @@ class PainterLoadVideo:
                                start_frame, custom_width, custom_height,
                                downscale_ratio)
         (src_w, src_h, src_fps, src_duration, src_total, frame_step,
-         _expected, out_w, out_h, has_alpha) = next(stream)
+         _expected, out_w, out_h, has_alpha, has_audio) = next(stream)
 
         budget = _frame_budget(src_w, src_h)
         channels = 4 if has_alpha else 3
@@ -382,9 +411,17 @@ class PainterLoadVideo:
                     "({} frames required, got {}).".format(remainder, len(images)))
             images = images[:keep]
 
-        audio_start = start_frame / src_fps if src_fps > 0 else 0.0
-        audio_duration = frame_load_cap * frame_step if frame_load_cap else 0.0
-        audio = _DeferredAudio(video_path, audio_start, audio_duration)
+        if has_audio:
+            audio_start = start_frame / src_fps if src_fps > 0 else 0.0
+            audio_duration = frame_load_cap * frame_step if frame_load_cap else 0.0
+            audio = _DeferredAudio(video_path, audio_start, audio_duration)
+        else:
+            # No audio track in the source: emit silent audio aligned
+            # with the loaded clip instead of None, so this node and
+            # every linked audio consumer keep working.
+            print("PainterLoadVideo: '{}' has no audio stream; "
+                  "outputting silent audio instead.".format(video))
+            audio = _silent_audio(len(images) * frame_step)
 
         video_info = {
             "source_fps": src_fps,
@@ -418,7 +455,7 @@ def _probe_video_meta(video_path):
     ffmpeg = _ffmpeg_executable()
     if ffmpeg is None:
         raise RuntimeError("no ffmpeg executable was found")
-    width, height, fps, duration, _alpha, _args = _probe_stream(ffmpeg, video_path)
+    width, height, fps, duration, _alpha, _audio, _args = _probe_stream(ffmpeg, video_path)
     frames = int(round(fps * duration)) if fps > 0 and duration > 0 else 0
     return {
         "fps": fps,
@@ -481,6 +518,7 @@ def _build_preview(video_path, force_rate, custom_width, custom_height,
     cache_dir = os.path.join(folder_paths.get_temp_directory(), "painter_video_preview")
     os.makedirs(cache_dir, exist_ok=True)
     key = hashlib.sha1("|".join([
+        "v2",
         os.path.basename(video_path), str(os.stat(video_path).st_mtime),
         str(force_rate), str(custom_width), str(custom_height),
         str(frame_load_cap), str(start_frame), fmt,
@@ -501,6 +539,10 @@ def _build_preview(video_path, force_rate, custom_width, custom_height,
                 "crop=if(gt({a}\\,a)\\,iw\\,ih*{a}):if(gt({a}\\,a)\\,iw/{a}\\,ih)".format(a=aspect))
         filters.append(f"scale={out_w}:{out_h}")
 
+    # Keep the audio track (aac) so hovering the preview can unmute it;
+    # -t trims the audio to the same length as the capped video frames.
+    eff_fps = force_rate or src_fps
+    clip_seconds = frames / eff_fps if eff_fps > 0 else 0.0
     args = [ffmpeg, "-v", "error"]
     if start_time > 0:
         args += ["-ss", f"{start_time:.4f}"]
@@ -508,7 +550,11 @@ def _build_preview(video_path, force_rate, custom_width, custom_height,
     if filters:
         args += ["-vf", ",".join(filters)]
     args += ["-frames:v", str(frames), "-c:v", "libx264", "-preset", "ultrafast",
-             "-pix_fmt", "yuv420p", "-movflags", "+faststart", "-an", "-y", out_path]
+             "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "96k",
+             "-movflags", "+faststart", "-y"]
+    if clip_seconds > 0:
+        args += ["-t", f"{clip_seconds:.4f}"]
+    args += [out_path]
     try:
         subprocess.run(args, stdout=subprocess.DEVNULL,
                        stderr=subprocess.PIPE, check=True)
