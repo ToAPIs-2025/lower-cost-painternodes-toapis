@@ -459,20 +459,38 @@ function getFirstRowCenterY(node) {
  *   { x, y, w, rowCenterY, scale }
  * 两种渲染模式分别取不同来源。
  */
-function computeAnchor(node, layer) {
-    const layerRect = layer.getBoundingClientRect();
+/* Per-frame DOM probing is the expensive part of this ticker: every
+   getBoundingClientRect() flushes layout, and with Nodes 2.0 off the
+   .lg-node querySelector always misses anyway. Cache the probe per node and
+   share one layer/canvas rect across the whole frame instead of asking for
+   one per node. */
+const domProbe = new Map();   // node.id -> { epoch, el, slot }
+let probeEpoch = 0;
+
+function probeNodeDom(node) {
+    const hit = domProbe.get(node.id);
+    if (hit && hit.epoch === probeEpoch) return hit;
+    const rec = { epoch: probeEpoch, el: null, slot: null };
+    try {
+        rec.el = document.querySelector(`.lg-node[data-node-id="${node.id}"]`);
+        if (rec.el) rec.slot = rec.el.querySelector(".lg-slot--input");
+    } catch (e) {
+        rec.el = null;
+    }
+    domProbe.set(node.id, rec);
+    return rec;
+}
+
+function computeAnchor(node, layer, rects) {
+    const layerRect = rects ? rects.layerRect : layer.getBoundingClientRect();
 
     // --- Nodes 2.0：节点本身就是 DOM ---
-    let el = null;
-    try {
-        el = document.querySelector(`.lg-node[data-node-id="${node.id}"]`);
-    } catch (e) {
-        el = null;
-    }
+    const probe = probeNodeDom(node);
+    const el = probe.el;
     if (el) {
         const r = el.getBoundingClientRect();
         if (r.width > 1 && r.height > 1) {
-            const slot = el.querySelector(".lg-slot--input");
+            const slot = probe.slot;
             const sr = slot ? slot.getBoundingClientRect() : null;
             // slot 中心相对节点顶部约 15.3%（248px 宽时是 38px）
             const rowCenterY = sr
@@ -494,7 +512,7 @@ function computeAnchor(node, layer) {
     const rowLy = getFirstRowCenterY(node);
     if (rowLy == null) return null;
     const ds = app.canvas.ds || { scale: 1, offset: [0, 0] };
-    const cRect = cvs.getBoundingClientRect();
+    const cRect = (rects && rects.canvasRect) ? rects.canvasRect : cvs.getBoundingClientRect();
     const x = cRect.left - layerRect.left + (node.pos[0] + ds.offset[0]) * ds.scale;
     const y = cRect.top - layerRect.top + (node.pos[1] + ds.offset[1]) * ds.scale;
     return {
@@ -506,12 +524,12 @@ function computeAnchor(node, layer) {
     };
 }
 
-function updateWrap(node) {
+function updateWrap(node, rects) {
     const wrap = ensureWrap(node);
     if (!wrap) return;
 
     const layer = wrap.parentElement;
-    const a = layer ? computeAnchor(node, layer) : null;
+    const a = layer ? computeAnchor(node, layer, rects) : null;
     if (!a) {
         if (wrap.style.display !== "none") wrap.style.display = "none";
         return;
@@ -531,14 +549,56 @@ function updateWrap(node) {
 }
 
 let tickerStarted = false;
+let idleFrames = 0;
+let lastGeometryKey = "";
+
 function startTicker() {
     if (tickerStarted) return;
     tickerStarted = true;
     const loop = () => {
         try {
             const graph = app.graph || app.canvas?.graph;
-            for (const n of (graph?._nodes || [])) {
-                if (n.type === THIS_TYPE) updateWrap(n);
+            const nodes = (graph?._nodes || []).filter((n) => n.type === THIS_TYPE);
+
+            if (nodes.length === 0) {
+                idleFrames = 0;
+                lastGeometryKey = "";
+            } else {
+                const ds = app.canvas?.ds;
+                /* Cheap numeric key: pan/zoom plus every node's geometry.
+                   Reading pos/size is free; reading the DOM is not. */
+                let geo = `${ds?.offset?.[0]},${ds?.offset?.[1]},${ds?.scale}`;
+                for (const n of nodes) {
+                    geo += `|${n.id}:${n.pos?.[0]},${n.pos?.[1]},${n.size?.[0]},${n.size?.[1]}`;
+                }
+
+                const moving = app.canvas?.isDragging || app.canvas?.dirty?.bg;
+                if (geo === lastGeometryKey && !moving) {
+                    /* Nothing moved. Skip the DOM pass instead of forcing layout
+                       60 times a second; a few settle frames keep late DOM
+                       mutations correct. */
+                    idleFrames = Math.min(idleFrames + 1, 8);
+                    probeEpoch++;
+                    if (idleFrames >= 3) {
+                        requestAnimationFrame(loop);
+                        return;
+                    }
+                } else {
+                    idleFrames = 0;
+                    lastGeometryKey = geo;
+                }
+
+                const layer = document.querySelector("." + LAYER_CLASS);
+                if (layer) {
+                    /* One layout read per frame, shared by every node. */
+                    const rects = {
+                        layerRect: layer.getBoundingClientRect(),
+                        canvasRect: app.canvas?.canvas?.getBoundingClientRect() ?? null,
+                    };
+                    for (const n of nodes) updateWrap(n, rects);
+                } else {
+                    for (const n of nodes) updateWrap(n, null);
+                }
             }
         } catch (e) {
             // 任何绘制异常都不能影响画布

@@ -1600,18 +1600,26 @@ function startPlayheadLoop(node) {
         // 时间读数 = 相对当前视图的位置（片段视图下 0 就是片段开头）
         if (refs.tCur) {
             const rel = Math.max(0, Math.min(t - view.start, view.span));
-            refs.tCur.textContent = formatTime(rel);
+            const txt = formatTime(rel);
+            if (refs.tCur.textContent !== txt) refs.tCur.textContent = txt;
         }
 
         const playhead = refs.playhead;
         if (playhead && playhead.parentElement) {
-            const w = playhead.parentElement.clientWidth || 1;
             const shown = audio.currentTime || 0;
             const frac = Math.max(0, Math.min((shown - view.start) / view.span, 1));
+            /* clientWidth forces a synchronous layout. This rAF runs forever
+               once started, so only touch the DOM when the position that the
+               playhead depends on has actually moved. */
+            const posKey = `${frac.toFixed(4)}|${view.start}|${view.span}|${audio.paused ? 1 : 0}`;
+            if (node.pau_playheadKey !== posKey) {
+                node.pau_playheadKey = posKey;
+                const w = playhead.parentElement.clientWidth || 1;
 
-            playhead.style.left = `${frac * w}px`;
-            playhead.style.display =
-                audio.paused && shown <= view.start + 0.001 ? "none" : "block";
+                playhead.style.left = `${frac * w}px`;
+                playhead.style.display =
+                    audio.paused && shown <= view.start + 0.001 ? "none" : "block";
+            }
         }
 
         node.pau_rafId = requestAnimationFrame(tick);

@@ -21,6 +21,23 @@ const liveNodes = new Set();
 let pollTimer = null;
 let fastTimer = null;
 
+/* ------------------------------------------------------------------
+   Feedback-loop guards.
+
+   refresh() mutates widgets and node size. Those mutations dirty the graph,
+   which can make the frontend re-configure it, which fires afterConfigure(),
+   which calls scheduleFast() again - a loop that spins at FAST_MS and pegs a
+   CPU core.
+
+   The signature map below is the actual fix: when nothing structural changed
+   there is nothing to rebuild, so refresh() performs no mutation at all and
+   the loop cannot close. The backoff is only a safety net for whatever the
+   signature misses.
+   ------------------------------------------------------------------ */
+let fastStreak = 0;
+let fastDelay = FAST_MS;
+const lastSignature = new Map();
+
 /* ------------------------------------------------------------------ */
 /* graph helpers                                                       */
 /* ------------------------------------------------------------------ */
@@ -188,7 +205,14 @@ function scheduleFast() {
                 console.error("[PainterNodes] group refresh failed", error);
             }
         }
-    }, FAST_MS);
+    }, fastDelay);
+}
+
+/* Called from paths that are provably driven by the user, so the backoff
+   counter does not punish legitimate edits after a runaway episode. */
+function noteExternalChange() {
+    fastStreak = 0;
+    fastDelay = FAST_MS;
 }
 
 /* ------------------------------------------------------------------ */
@@ -226,6 +250,7 @@ class PainterGroupsBypasser extends LGraphNode {
 
     onAdded() {
         liveNodes.add(this);
+        noteExternalChange();
         startPolling();
         scheduleFast();
     }
@@ -253,7 +278,8 @@ class PainterGroupsBypasser extends LGraphNode {
             alphabet = parseAlphabet(this.properties?.[PROP_SORT_ALPHA]);
             if (!alphabet.length) sort = "alphanumeric";
         }
-        const groups = orderGroups(collectGroups(this.properties?.[PROP_SUBGRAPHS] !== false), sort, alphabet);
+        const includeSubgraphs = this.properties?.[PROP_SUBGRAPHS] !== false;
+        const groups = orderGroups(collectGroups(includeSubgraphs), sort, alphabet);
         const colors = wantedColors(this.properties?.[PROP_COLORS]);
         const rawTitle = String(this.properties?.[PROP_TITLE] ?? "").trim();
 
@@ -266,16 +292,50 @@ class PainterGroupsBypasser extends LGraphNode {
             }
         }
 
+        const matches = groups.filter((group) => {
+            if (colors.length > 0) {
+                const groupColor = expandHex(group.color);
+                if (!groupColor || !colors.includes(groupColor)) return false;
+            }
+            if (pattern && !pattern.test(group.title ?? "")) return false;
+            return true;
+        });
+
+        /* One recomputeInsideNodes() per group per pass, reused below.
+           groupIsLive() walks the whole graph, so calling it twice per group
+           per pass is what makes a busy poll expensive on large workflows. */
+        const liveOf = new Map();
+        for (const group of matches) liveOf.set(groupKey(group), groupIsLive(group));
+
+        /* Structural signature. If it equals the previous pass there is nothing
+           to rebuild - and we must not touch widgets or size, because that
+           mutation is exactly what re-triggers configure and feeds the loop. */
+        const signature = [
+            sort,
+            alphabet.join("|"),
+            rawTitle,
+            String(this.properties?.[PROP_COLORS] ?? ""),
+            String(includeSubgraphs),
+            matches.map((g) => `${groupKey(g)}:${liveOf.get(groupKey(g)) ? 1 : 0}`).join(","),
+        ].join("::");
+        const selfKey = this.id ?? this.title;
+
+        if (lastSignature.get(selfKey) === signature) {
+            // Same structure: only keep toggle values honest, mutate nothing else.
+            for (const w of this.toggleWidgets()) {
+                const live = w.painterGroup
+                    ? (liveOf.get(groupKey(w.painterGroup)) ?? groupIsLive(w.painterGroup))
+                    : false;
+                if (w.value !== live) w.value = live;
+            }
+            return;
+        }
+        lastSignature.set(selfKey, signature);
+
         const widgetCountBefore = this.toggleWidgets().length;
         let index = 0;
 
-        for (const group of groups) {
-            if (colors.length > 0) {
-                const groupColor = expandHex(group.color);
-                if (!groupColor || !colors.includes(groupColor)) continue;
-            }
-            if (pattern && !pattern.test(group.title ?? "")) continue;
-
+        for (const group of matches) {
             const key = groupKey(group);
             let widget = this.toggleWidgets().find((w) => w.painterKey === key);
             if (!widget) {
@@ -291,7 +351,7 @@ class PainterGroupsBypasser extends LGraphNode {
             widget.painterGroup = group;
             widget.label = group.title?.trim() ? group.title : `Group ${index + 1}`;
 
-            const live = groupIsLive(group);
+            const live = liveOf.get(key) ?? groupIsLive(group);
             if (widget.value !== live) widget.value = live;
 
             const position = this.widgets.indexOf(widget);
@@ -302,8 +362,17 @@ class PainterGroupsBypasser extends LGraphNode {
             index++;
         }
 
-        while ((this.widgets ?? [])[index]) {
-            this.removeWidget(index);
+        /* removeWidget() locates the widget by OBJECT (this.widgets.indexOf(e)).
+           Passing the numeric index never matches, so LiteGraph logs
+           "Widget not found on this node" and returns without removing anything -
+           which made this loop infinite the moment a group was deleted and a
+           stale toggle had to be dropped. Snapshot the tail first, because every
+           removal splices the array and would shift the indices under us.
+           Only drop our own toggles, never the addProperty() widgets. */
+        const stale = (this.widgets ?? []).slice(index);
+        for (const w of stale) {
+            if (w.painterKey == null) continue;
+            this.removeWidget(w);
         }
 
         if (this.toggleWidgets().length !== widgetCountBefore) {
@@ -396,11 +465,25 @@ app.registerExtension({
         LiteGraph.registerNodeType(NODE_TYPE, PainterGroupsBypasser);
     },
     afterConfigure() {
+        /* A real workflow load fires this once or twice. If configure keeps
+           arriving with no user action in between, the previous refresh fed it
+           back - grow the interval instead of hammering at FAST_MS. */
+        fastStreak++;
+        if (fastStreak >= 3) {
+            fastDelay = Math.min(FAST_MS * 2 ** Math.min(fastStreak - 2, 6), 4000);
+            if (fastStreak === 3) {
+                console.warn(
+                    "[PainterNodes] PainterGroupsBypasser: repeated configure with no user input, backing off to",
+                    fastDelay, "ms"
+                );
+            }
+        }
         scheduleFast();
     },
     nodeCreated(node) {
         if (node?.comfyClass === NODE_TYPE || node?.type === NODE_TYPE) {
             liveNodes.add(node);
+            noteExternalChange();
             startPolling();
         }
     },
