@@ -35,6 +35,8 @@ Image price is a Key-scoped quotation; do not treat the missing settlement as ze
 
 Token-rate reference for this video: $5.285714/1M total tokens; the request amount above is the observed charge.
 
-[模型落地页与归因](https://go2v.toapis.com/1023_pn)
+[注册与邀请归因](https://toapis.com/login?aff=BEWR)
 
 附带可选 ComfyUI 节点候选包，安装说明见英文页。完整 ComfyUI / torch 运行及界面尚未验收，原有节点保留。
+
+[Model API reference](https://docs.toapis.com/docs/cn/api-reference/images/gpt-image-2-vip/generation)

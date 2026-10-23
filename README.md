@@ -18,7 +18,7 @@ Image price is a Key-scoped quotation; do not treat the missing settlement as ze
 Token-rate reference for this video: $5.285714/1M total tokens; the request amount above is the observed charge.
 
 
-ToAPIs guide calls and asset bytes were checked; full ComfyUI/torch/UI acceptance remains pending. [Model page](https://go2v.toapis.com/1023_pn).
+ToAPIs guide calls and asset bytes were checked; full ComfyUI/torch/UI acceptance remains pending. [Register at ToAPIs](https://toapis.com/login?aff=BEWR).
 
 ---
 

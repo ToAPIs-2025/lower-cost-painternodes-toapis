@@ -52,8 +52,10 @@ Token-rate reference for this video: $5.285714/1M total tokens; the request amou
 
 [Integration details and acceptance checklist](integration/README.md) · [Attribution and inspected source](UPSTREAM.md).
 
-[ToAPIs model page](https://go2v.toapis.com/1023_pn)
+[Register at ToAPIs](https://toapis.com/login?aff=BEWR)
 
 ## Optional ComfyUI extension candidate
 
 Copy `integration/toapis_nodes/` into `ComfyUI/custom_nodes/toapis_nodes/`. Restart ComfyUI after setting the Key in its server environment. The image node returns IMAGE plus a cost summary; the video node returns an MP4 path plus a cost summary. `live` defaults to false. Use a stable, unique `job_id` per intended paid job. The package imports/definitions are checked, but a full ComfyUI/torch/UI run has not been performed. Existing Painter nodes are preserved.
+
+[Model API reference](https://docs.toapis.com/docs/cn/api-reference/images/gpt-image-2-vip/generation)
