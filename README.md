@@ -1,3 +1,27 @@
+# Lower-cost PainterNodes · 更低成本的图片与视频 API 方案
+
+Optional ToAPIs image/video node candidate; existing Painter nodes preserved.
+
+[English guide](toapis-guide/README.md) · [中文教程](toapis-guide/README_zh-CN.md) · [Provider candidate](toapis-guide/integration/README.md)
+
+# Model pricing and call cost
+
+2026-10-23 · USD · ToAPIs international site (.com). Sorted by call amount; pending image quotes are labeled.
+
+| Model | Conditions | Current API price | This call |
+|---|---|---:|---:|
+| gpt-image-2(VIP) | low / 1K / 1 image | $0.0019/image | Settlement pending; quote $0.0019 |
+| seedance-2-fast | 480p / 4.04s / audio off | ≈ $0.053111/s in this case | $0.214568 settled |
+
+Image price is a Key-scoped quotation; do not treat the missing settlement as zero. Video is .com `billing=settled`; $/s = this settled cost / decoded duration. Token rates are not flat per-second tariffs.
+
+Token-rate reference for this video: $5.285714/1M total tokens; the request amount above is the observed charge.
+
+
+ToAPIs guide calls and asset bytes were checked; full ComfyUI/torch/UI acceptance remains pending. [Model page](https://go2v.toapis.com/1023_pn).
+
+---
+
 
 
 <a name="中文"></a>

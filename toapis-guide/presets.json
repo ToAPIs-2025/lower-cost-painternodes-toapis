@@ -1,0 +1,41 @@
+{
+  "gpt-image-2-vip": {
+    "model": "gpt-image-2-vip",
+    "kind": "image",
+    "request": {
+      "model": "gpt-image-2-vip",
+      "n": 1,
+      "size": "1:1",
+      "resolution": "1K",
+      "quality": "low"
+    },
+    "pricing_conditions": {
+      "resolution": "1K",
+      "n": 1,
+      "input_image_count": 0,
+      "quality": "low"
+    },
+    "needs_image": false,
+    "historical_api_success": true,
+    "current_pricing_status": "available"
+  },
+  "seedance-2-fast": {
+    "model": "seedance-2-fast",
+    "kind": "video",
+    "request": {
+      "model": "seedance-2-fast",
+      "duration": 4,
+      "resolution": "480p",
+      "aspect_ratio": "16:9",
+      "generate_audio": false
+    },
+    "pricing_conditions": {
+      "duration": 4,
+      "resolution": "480p",
+      "has_video_input": false
+    },
+    "needs_image": false,
+    "historical_api_success": true,
+    "current_pricing_status": "query_on_run"
+  }
+}

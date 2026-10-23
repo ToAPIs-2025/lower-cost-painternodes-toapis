@@ -1,0 +1,62 @@
+[
+  {
+    "date": "2026-10-23",
+    "site": "com",
+    "model": "gpt-image-2-vip",
+    "display_model": "gpt-image-2(VIP)",
+    "kind": "image",
+    "parameters": {
+      "model": "gpt-image-2-vip",
+      "n": 1,
+      "size": "1:1",
+      "resolution": "1K",
+      "quality": "low"
+    },
+    "file": "assets/gpt-image-2-vip-e6df74ab3a.png",
+    "width": 1024,
+    "height": 1024,
+    "actual_cost_usd": null,
+    "billing_status": "unavailable",
+    "quoted_usd_per_request": "0.0019",
+    "quote_unit_price": "0.0019",
+    "quote_unit": "request",
+    "seconds": null,
+    "actual_usd_per_second": null,
+    "usage": {
+      "charge_type": "per_request",
+      "requests": 1
+    },
+    "native_application_verified": false
+  },
+  {
+    "date": "2026-10-23",
+    "site": "com",
+    "model": "seedance-2-fast",
+    "display_model": "seedance-2-fast",
+    "kind": "video",
+    "parameters": {
+      "model": "seedance-2-fast",
+      "duration": 4,
+      "resolution": "480p",
+      "aspect_ratio": "16:9",
+      "generate_audio": false
+    },
+    "file": "assets/seedance-2-fast-a20e5042a9.mp4",
+    "width": 864,
+    "height": 496,
+    "actual_cost_usd": "0.214568",
+    "billing_status": "settled",
+    "quoted_usd_per_request": "0.2029714176",
+    "quote_unit_price": "5.285714",
+    "quote_unit": "1m_tokens",
+    "seconds": "4.04",
+    "actual_usd_per_second": "0.053111",
+    "usage": {
+      "completion_tokens": 40594,
+      "total_tokens": 40594,
+      "charge_type": "per_token",
+      "billed_tokens": 40594
+    },
+    "native_application_verified": false
+  }
+]
